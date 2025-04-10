@@ -1,6 +1,6 @@
 [package]
 name = "rmcp-in-process-transport"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 description = "In-process transport implementation for RMCP"
 license = "MIT OR Apache-2.0"

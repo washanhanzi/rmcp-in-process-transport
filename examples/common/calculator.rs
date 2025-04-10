@@ -7,7 +7,10 @@ pub struct SumRequest {
     pub b: i32,
 }
 #[derive(Debug, Clone)]
-pub struct Calculator;
+pub struct Calculator {
+    pub dummy_data: String,
+}
+
 impl Calculator {
     #[tool(description = "Calculate the sum of two numbers")]
     fn sum(&self, #[tool(aggr)] SumRequest { a, b }: SumRequest) -> String {
@@ -34,7 +37,7 @@ impl ServerHandler for Calculator {
     tool_box!(@derive);
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            instructions: Some("A simple calculator".into()),
+            instructions: Some(format!("A simple calculator with dummy data: {}", self.dummy_data)),
             ..Default::default()
         }
     }

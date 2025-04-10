@@ -10,7 +10,7 @@ use common::calculator::Calculator;
 async fn main() -> anyhow::Result<()> {
     // Set up logging - enable all log levels
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::DEBUG)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
@@ -25,7 +25,10 @@ async fn main() -> anyhow::Result<()> {
 
         // Create and start an in-process service, using the TokioInProcess API
         // which is similar to TokioChildProcess
-        let service = ().into_dyn().serve(TokioInProcess::new(Calculator).serve().await?).await?;
+        let calculator = Calculator {
+            dummy_data: format!("Client #{}", idx),
+        };
+        let service = ().into_dyn().serve(TokioInProcess::new(calculator).serve().await?).await?;
 
         tracing::info!("Client {}: Created successfully", idx);
         client_list.insert(idx, service);

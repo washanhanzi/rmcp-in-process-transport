@@ -247,7 +247,7 @@ pub struct TokioInProcess<S>
 where
     S: Service<RoleServer> + Send + 'static,
 {
-    server_service: S,
+    server_service: Option<S>,
     client_transport: InProcessTransport<RoleClient>,
     buffer_size: usize,
     _server_task: Option<tokio::task::JoinHandle<()>>,
@@ -265,7 +265,7 @@ where
     /// Create a new in-process service with the given service implementation and buffer size
     pub fn with_buffer_size(service: S, buffer_size: usize) -> Self {
         Self {
-            server_service: service,
+            server_service: Some(service),
             client_transport: InProcessTransport {
                 tx: tokio::sync::mpsc::channel(buffer_size).0,
                 rx: tokio::sync::mpsc::channel(buffer_size).1,
@@ -283,8 +283,8 @@ where
             create_in_process_transport_pair(self.buffer_size);
 
         // Start the server in a background task
-        let server_service =
-            std::mem::replace(&mut self.server_service, unsafe { std::mem::zeroed() });
+        let server_service = self.server_service.take()
+            .expect("Server service is missing - serve() was likely called twice");
         let server_handle = tokio::spawn(async move {
             if let Err(e) = server_transport.serve(server_service).await {
                 tracing::error!("Server error: {:?}", e);
