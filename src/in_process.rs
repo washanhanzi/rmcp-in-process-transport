@@ -4,12 +4,12 @@ use futures::{Sink, Stream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use rmcp::{
-    serve_client, serve_server,
+    Service, serve_client, serve_server,
     service::{
-        RoleClient, RoleServer, RunningService, RxJsonRpcMessage, ServiceRole, TxJsonRpcMessage,
+        ClientInitializeError, RoleClient, RoleServer, RunningService, RxJsonRpcMessage,
+        ServerInitializeError, ServiceRole, TxJsonRpcMessage,
     },
-    transport::IntoTransport,
-    Service,
+    transport::{IntoTransport, sink_stream::SinkStreamTransport},
 };
 
 #[derive(Debug)]
@@ -47,6 +47,18 @@ impl From<InProcessTransportError> for std::io::Error {
 impl From<std::io::Error> for InProcessTransportError {
     fn from(err: std::io::Error) -> Self {
         InProcessTransportError(format!("IO error: {}", err))
+    }
+}
+
+impl From<ClientInitializeError> for InProcessTransportError {
+    fn from(err: ClientInitializeError) -> Self {
+        InProcessTransportError(format!("Client initialization error: {}", err))
+    }
+}
+
+impl From<ServerInitializeError> for InProcessTransportError {
+    fn from(err: ServerInitializeError) -> Self {
+        InProcessTransportError(format!("Server initialization error: {}", err))
     }
 }
 
@@ -105,6 +117,7 @@ impl<R: ServiceRole> InProcessTransport<R> {
         let sink = InProcessSink {
             tx: self.tx,
             _phantom: PhantomData,
+            pending: None,
         };
         let stream = InProcessStream {
             rx: self.rx,
@@ -126,20 +139,25 @@ impl<R: ServiceRole> InProcessTransport<R> {
 
 /// Extension methods for InProcessTransport to simplify common operations
 pub trait InProcessTransportExt<R: ServiceRole> {
+    /// The error type returned by serve operations
+    type Error;
+
     /// Create a new service using this transport
     fn serve<S>(
         self,
         service: S,
-    ) -> impl std::future::Future<Output = Result<RunningService<R, S>, InProcessTransportError>> + Send
+    ) -> impl std::future::Future<Output = Result<RunningService<R, S>, Self::Error>> + Send
     where
         S: Service<R> + Send + 'static;
 }
 
 impl InProcessTransportExt<RoleClient> for InProcessTransport<RoleClient> {
+    type Error = ClientInitializeError;
+
     async fn serve<S>(
         self,
         service: S,
-    ) -> Result<RunningService<RoleClient, S>, InProcessTransportError>
+    ) -> Result<RunningService<RoleClient, S>, ClientInitializeError>
     where
         S: Service<RoleClient> + Send + 'static,
     {
@@ -148,10 +166,12 @@ impl InProcessTransportExt<RoleClient> for InProcessTransport<RoleClient> {
 }
 
 impl InProcessTransportExt<RoleServer> for InProcessTransport<RoleServer> {
+    type Error = ServerInitializeError;
+
     async fn serve<S>(
         self,
         service: S,
-    ) -> Result<RunningService<RoleServer, S>, InProcessTransportError>
+    ) -> Result<RunningService<RoleServer, S>, ServerInitializeError>
     where
         S: Service<RoleServer> + Send + 'static,
     {
@@ -159,10 +179,14 @@ impl InProcessTransportExt<RoleServer> for InProcessTransport<RoleServer> {
     }
 }
 
-/// The sink component of the in-process transport
-pub struct InProcessSink<R: ServiceRole> {
-    tx: Sender<TxJsonRpcMessage<R>>,
-    _phantom: PhantomData<R>,
+pin_project_lite::pin_project! {
+    /// The sink component of the in-process transport
+    pub struct InProcessSink<R: ServiceRole> {
+        tx: Sender<TxJsonRpcMessage<R>>,
+        _phantom: PhantomData<R>,
+        // Store any pending message that couldn't be sent
+        pending: Option<TxJsonRpcMessage<R>>,
+    }
 }
 
 pin_project_lite::pin_project! {
@@ -179,13 +203,36 @@ impl<R: ServiceRole> Sink<TxJsonRpcMessage<R>> for InProcessSink<R> {
 
     fn poll_ready(
         self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
+        cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
-        // MPSC Sender doesn't have poll_ready, we just check if it's closed
-        if self.tx.is_closed() {
-            std::task::Poll::Ready(Err(InProcessTransportError("Channel closed".to_string())))
+        let this = self.project();
+
+        // First, try to flush any pending message
+        if let Some(pending) = this.pending.take() {
+            match this.tx.try_send(pending) {
+                Ok(()) => {
+                    // Successfully sent pending message, now we're ready
+                    std::task::Poll::Ready(Ok(()))
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                    // Channel still full, store the message back and return Pending
+                    *this.pending = Some(msg);
+                    // Register waker for potential future readiness
+                    cx.waker().wake_by_ref();
+                    std::task::Poll::Pending
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => std::task::Poll::Ready(
+                    Err(InProcessTransportError("Channel closed".to_string())),
+                ),
+            }
         } else {
-            std::task::Poll::Ready(Ok(()))
+            // No pending message, check if channel is closed
+            if this.tx.is_closed() {
+                std::task::Poll::Ready(Err(InProcessTransportError("Channel closed".to_string())))
+            } else {
+                // Channel is open and no pending messages, we're ready
+                std::task::Poll::Ready(Ok(()))
+            }
         }
     }
 
@@ -193,9 +240,20 @@ impl<R: ServiceRole> Sink<TxJsonRpcMessage<R>> for InProcessSink<R> {
         self: std::pin::Pin<&mut Self>,
         item: TxJsonRpcMessage<R>,
     ) -> Result<(), Self::Error> {
-        self.tx
-            .try_send(item)
-            .map_err(|e| InProcessTransportError(format!("Failed to send message: {}", e)))
+        let this = self.project();
+
+        // Try to send immediately
+        match this.tx.try_send(item) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                // Channel full, store message as pending for next poll_ready
+                *this.pending = Some(msg);
+                Ok(())
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(InProcessTransportError("Channel closed".to_string()))
+            }
+        }
     }
 
     fn poll_flush(
@@ -226,89 +284,97 @@ impl<R: ServiceRole> Stream for InProcessStream<R> {
     }
 }
 
+// Use the TransportAdapterSinkStream to create a proper Transport
+pub enum TransportAdapterInProcess {}
+
 // Implement the IntoTransport trait for the unified InProcessTransport
-impl<R: ServiceRole + 'static> IntoTransport<R, InProcessTransportError, ()>
+impl<R> IntoTransport<R, InProcessTransportError, TransportAdapterInProcess>
     for InProcessTransport<R>
+where
+    R: ServiceRole + 'static + Unpin,
+    R::Req: Unpin,
+    R::Resp: Unpin,
+    R::Not: Unpin,
 {
     fn into_transport(
         self,
-    ) -> (
-        impl Sink<TxJsonRpcMessage<R>, Error = InProcessTransportError> + Send + 'static,
-        impl Stream<Item = RxJsonRpcMessage<R>> + Send + 'static,
-    ) {
-        // Simply split into sink and stream
-        self.split()
+    ) -> impl rmcp::transport::Transport<R, Error = InProcessTransportError> + 'static {
+        let (sink, stream) = self.split();
+        SinkStreamTransport::new(sink, stream)
     }
 }
 
 /// A convenience struct that manages an in-process service and provides a client transport
 /// to communicate with it, similar to TokioChildProcess but for in-process communication
-pub struct TokioInProcess<S>
-where
-    S: Service<RoleServer> + Send + 'static,
-{
-    server_service: Option<S>,
+pub struct TokioInProcess {
     client_transport: InProcessTransport<RoleClient>,
-    buffer_size: usize,
-    _server_task: Option<tokio::task::JoinHandle<()>>,
+    _server_task: tokio::task::JoinHandle<()>,
 }
 
-impl<S> TokioInProcess<S>
-where
-    S: Service<RoleServer> + Send + 'static,
-{
+impl TokioInProcess {
     /// Create a new in-process service with the given service implementation
-    pub fn new(service: S) -> Self {
-        Self::with_buffer_size(service, 32)
+    pub async fn new<S>(service: S) -> Result<Self, InProcessTransportError>
+    where
+        S: Service<RoleServer> + Send + 'static,
+    {
+        Self::with_buffer_size(service, 32).await
     }
 
     /// Create a new in-process service with the given service implementation and buffer size
-    pub fn with_buffer_size(service: S, buffer_size: usize) -> Self {
-        Self {
-            server_service: Some(service),
-            client_transport: InProcessTransport {
-                tx: tokio::sync::mpsc::channel(buffer_size).0,
-                rx: tokio::sync::mpsc::channel(buffer_size).1,
-                _phantom: PhantomData,
-            },
-            buffer_size,
-            _server_task: None,
-        }
-    }
-
-    /// Start the server and return a transport that can be used to communicate with it
-    pub async fn serve(mut self) -> Result<Self, InProcessTransportError> {
+    pub async fn with_buffer_size<S>(
+        service: S,
+        buffer_size: usize,
+    ) -> Result<Self, InProcessTransportError>
+    where
+        S: Service<RoleServer> + Send + 'static,
+    {
         // Create the transport pair
-        let (client_transport, server_transport) =
-            create_in_process_transport_pair(self.buffer_size);
+        let (client_transport, server_transport) = create_in_process_transport_pair(buffer_size);
 
         // Start the server in a background task
-        let server_service = self.server_service.take()
-            .expect("Server service is missing - serve() was likely called twice");
         let server_handle = tokio::spawn(async move {
-            if let Err(e) = server_transport.serve(server_service).await {
-                tracing::error!("Server error: {:?}", e);
+            tracing::debug!("Server task starting");
+            match server_transport.serve(service).await {
+                Ok(running_service) => {
+                    tracing::debug!("Server initialized successfully, keeping it alive");
+                    // Keep the running service alive by waiting for it to finish
+                    if let Err(e) = running_service.waiting().await {
+                        tracing::error!("Server service error: {:?}", e);
+                    } else {
+                        tracing::debug!("Server service completed normally");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Server initialization error: {:?}", e);
+                }
             }
         });
 
-        // Replace the client transport with the newly created one
-        self.client_transport = client_transport;
-        self._server_task = Some(server_handle);
-
-        Ok(self)
+        Ok(Self {
+            client_transport,
+            _server_task: server_handle,
+        })
     }
 }
 
-impl<S> IntoTransport<RoleClient, InProcessTransportError, ()> for TokioInProcess<S>
-where
-    S: Service<RoleServer> + Send + 'static,
+impl IntoTransport<RoleClient, InProcessTransportError, TransportAdapterInProcess>
+    for TokioInProcess
 {
     fn into_transport(
         self,
-    ) -> (
-        impl Sink<TxJsonRpcMessage<RoleClient>, Error = InProcessTransportError> + Send + 'static,
-        impl Stream<Item = RxJsonRpcMessage<RoleClient>> + Send + 'static,
-    ) {
+    ) -> impl rmcp::transport::Transport<RoleClient, Error = InProcessTransportError> + 'static
+    {
+        // Spawn a task to keep the server task alive
+        tracing::debug!("Moving server task to background keeper");
+        tokio::spawn(async move {
+            tracing::debug!("Background keeper task started");
+            if let Err(e) = self._server_task.await {
+                tracing::error!("Server task failed: {:?}", e);
+            } else {
+                tracing::debug!("Background server task completed normally");
+            }
+        });
+
         self.client_transport.into_transport()
     }
 }

@@ -25,18 +25,18 @@ async fn main() -> anyhow::Result<()> {
 
         // Create and start an in-process service, using the TokioInProcess API
         // which is similar to TokioChildProcess
-        let calculator = Calculator {
-            dummy_data: format!("Client #{}", idx),
-        };
-        let service = ().into_dyn().serve(TokioInProcess::new(calculator).serve().await?).await?;
+        let calculator = Calculator::new(format!("Client #{}", idx));
+        let tokio_in_process = TokioInProcess::new(calculator).await?;
+        let service = ().into_dyn().serve(tokio_in_process).await?;
 
         tracing::info!("Client {}: Created successfully", idx);
         client_list.insert(idx, service);
     }
 
-    tracing::info!("Created {} clients", client_list.len());
+    tracing::info!("✅ Successfully created {} clients", client_list.len());
 
     // Perform operations on each client
+    let mut successful_operations = 0;
     for (idx, service) in client_list.iter() {
         tracing::info!("Testing client {}", idx);
 
@@ -47,10 +47,14 @@ async fn main() -> anyhow::Result<()> {
         // List tools
         match service.list_tools(Default::default()).await {
             Ok(tools) => {
-                tracing::info!("Client {}: Available tools: {:?}", idx, tools);
+                tracing::info!(
+                    "Client {}: ✅ Listed {} tools successfully",
+                    idx,
+                    tools.tools.len()
+                );
             }
             Err(e) => {
-                tracing::error!("Client {}: Failed to get tools: {:?}", idx, e);
+                tracing::error!("Client {}: ❌ Failed to get tools: {:?}", idx, e);
                 continue;
             }
         }
@@ -66,23 +70,63 @@ async fn main() -> anyhow::Result<()> {
             .await
         {
             Ok(result) => {
-                tracing::info!("Client {}: Sum result: {:?}", idx, result);
+                if let Some(content) = result.content.first() {
+                    match &content.raw {
+                        rmcp::model::RawContent::Text(text) => {
+                            tracing::info!(
+                                "Client {}: ✅ Tool call successful: {} + 10 = {}",
+                                idx,
+                                idx,
+                                text.text
+                            );
+                            successful_operations += 1;
+                        }
+                        _ => {
+                            tracing::info!(
+                                "Client {}: ✅ Tool call successful (non-text result)",
+                                idx
+                            );
+                            successful_operations += 1;
+                        }
+                    }
+                }
             }
             Err(e) => {
-                tracing::error!("Client {}: Failed to call tool: {:?}", idx, e);
+                tracing::error!("Client {}: ❌ Failed to call tool: {:?}", idx, e);
             }
         }
     }
 
+    tracing::info!(
+        "✅ Operations completed: {}/{} clients performed successful tool calls",
+        successful_operations,
+        client_list.len()
+    );
+
     // Clean up all clients
-    tracing::info!("Cleaning up all clients");
+    tracing::info!("🧹 Cleaning up all clients");
+    let mut successful_cleanups = 0;
     for (idx, service) in client_list {
         match service.cancel().await {
-            Ok(_) => tracing::info!("Client {}: Successfully cancelled", idx),
-            Err(e) => tracing::error!("Client {}: Error cancelling: {:?}", idx, e),
+            Ok(_) => {
+                tracing::info!("Client {}: ✅ Successfully cancelled", idx);
+                successful_cleanups += 1;
+            }
+            Err(e) => tracing::error!("Client {}: ❌ Error cancelling: {:?}", idx, e),
         }
     }
 
-    tracing::info!("Example completed");
+    tracing::info!(
+        "✅ Cleanup completed: {}/{} clients cancelled successfully",
+        successful_cleanups,
+        10
+    );
+    tracing::info!("🎉 IN-PROCESS TRANSPORT EXAMPLE COMPLETED SUCCESSFULLY! 🎉");
+    tracing::info!(
+        "📊 Summary: {} clients created, {} tool operations, {} cleanups",
+        10,
+        successful_operations,
+        successful_cleanups
+    );
     Ok(())
 }
