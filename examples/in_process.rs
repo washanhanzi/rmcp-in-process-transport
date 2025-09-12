@@ -95,6 +95,51 @@ async fn main() -> anyhow::Result<()> {
                 tracing::error!("Client {}: ❌ Failed to call tool: {:?}", idx, e);
             }
         }
+
+        // Call the sub tool with arguments (structured result)
+        match service
+            .call_tool(CallToolRequestParam {
+                name: "sub".into(),
+                arguments: serde_json::json!({ "a": idx, "b": 3 })
+                    .as_object()
+                    .cloned(),
+            })
+            .await
+        {
+            Ok(result) => {
+                if let Some(structured) = result.structured_content {
+                    tracing::info!(
+                        "Client {}: ✅ Tool 'sub' call successful: {} - 3 = {}",
+                        idx,
+                        idx,
+                        structured
+                    );
+                    successful_operations += 1;
+                } else if let Some(content) = result.content.first() {
+                    match &content.raw {
+                        rmcp::model::RawContent::Text(text) => {
+                            tracing::info!(
+                                "Client {}: ✅ Tool 'sub' call successful (text): {} - 3 = {}",
+                                idx,
+                                idx,
+                                text.text
+                            );
+                            successful_operations += 1;
+                        }
+                        _ => {
+                            tracing::info!(
+                                "Client {}: ✅ Tool 'sub' call successful (non-text result)",
+                                idx
+                            );
+                            successful_operations += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Client {}: ❌ Failed to call tool 'sub': {:?}", idx, e);
+            }
+        }
     }
 
     tracing::info!(

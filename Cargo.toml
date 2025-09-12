@@ -1,20 +1,24 @@
 [package]
 name = "rmcp-in-process-transport"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "In-process transport implementation for RMCP"
-license = "MIT OR Apache-2.0"
 repository = "https://github.com/washanhanzi/rmcp-in-process-transport"
+license = "MIT OR Apache-2.0"
 
 [lib]
 name = "rmcp_in_process_transport"
 
+[[example]]
+name = "in_process"
+path = "examples/in_process.rs"
+
 [dependencies]
 futures = "0.3"
-tokio = { version = "1", features = ["sync", "rt", "macros"] }
 pin-project-lite = "0.2"
+rmcp = { version = "0.6", features = ["client", "macros", "server"] }
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
 tracing = "0.1"
-rmcp = { version = "0.3", features = ["client", "server", "macros"] }
 
 [dev-dependencies]
 anyhow = "1.0"
@@ -23,6 +27,3 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-[[example]]
-name = "in_process"
-path = "examples/in_process.rs"
