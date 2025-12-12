@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Call the sum tool with arguments
+        let expected_sum = idx + 10;
         match service
             .call_tool(CallToolRequestParam {
                 name: "sum".into(),
@@ -73,30 +74,42 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(content) = result.content.first() {
                     match &content.raw {
                         rmcp::model::RawContent::Text(text) => {
-                            tracing::info!(
-                                "Client {}: ✅ Tool call successful: {} + 10 = {}",
-                                idx,
-                                idx,
-                                text.text
-                            );
-                            successful_operations += 1;
+                            let actual: i32 = text.text.parse().unwrap_or(-1);
+                            if actual == expected_sum {
+                                tracing::info!(
+                                    "[E2E_SUM_PASS] Client {}: sum({} + 10) = {} (expected: {})",
+                                    idx,
+                                    idx,
+                                    actual,
+                                    expected_sum
+                                );
+                                successful_operations += 1;
+                            } else {
+                                tracing::error!(
+                                    "[E2E_SUM_FAIL] Client {}: sum({} + 10) = {} (expected: {})",
+                                    idx,
+                                    idx,
+                                    actual,
+                                    expected_sum
+                                );
+                            }
                         }
                         _ => {
-                            tracing::info!(
-                                "Client {}: ✅ Tool call successful (non-text result)",
+                            tracing::error!(
+                                "[E2E_SUM_FAIL] Client {}: unexpected non-text result",
                                 idx
                             );
-                            successful_operations += 1;
                         }
                     }
                 }
             }
             Err(e) => {
-                tracing::error!("Client {}: ❌ Failed to call tool: {:?}", idx, e);
+                tracing::error!("[E2E_SUM_FAIL] Client {}: call failed: {:?}", idx, e);
             }
         }
 
         // Call the sub tool with arguments (structured result)
+        let expected_sub = idx - 3;
         match service
             .call_tool(CallToolRequestParam {
                 name: "sub".into(),
@@ -107,37 +120,54 @@ async fn main() -> anyhow::Result<()> {
             .await
         {
             Ok(result) => {
-                if let Some(structured) = result.structured_content {
-                    tracing::info!(
-                        "Client {}: ✅ Tool 'sub' call successful: {} - 3 = {}",
-                        idx,
-                        idx,
-                        structured
-                    );
-                    successful_operations += 1;
+                if let Some(structured) = &result.structured_content {
+                    // Parse the structured result to verify the value
+                    if let Some(result_val) = structured.get("result").and_then(|v| v.as_i64()) {
+                        if result_val == expected_sub as i64 {
+                            tracing::info!(
+                                "[E2E_SUB_PASS] Client {}: sub({} - 3) = {} (expected: {})",
+                                idx,
+                                idx,
+                                result_val,
+                                expected_sub
+                            );
+                            successful_operations += 1;
+                        } else {
+                            tracing::error!(
+                                "[E2E_SUB_FAIL] Client {}: sub({} - 3) = {} (expected: {})",
+                                idx,
+                                idx,
+                                result_val,
+                                expected_sub
+                            );
+                        }
+                    } else {
+                        tracing::error!(
+                            "[E2E_SUB_FAIL] Client {}: could not parse structured result: {}",
+                            idx,
+                            structured
+                        );
+                    }
                 } else if let Some(content) = result.content.first() {
                     match &content.raw {
                         rmcp::model::RawContent::Text(text) => {
-                            tracing::info!(
-                                "Client {}: ✅ Tool 'sub' call successful (text): {} - 3 = {}",
-                                idx,
+                            tracing::error!(
+                                "[E2E_SUB_FAIL] Client {}: expected structured result, got text: {}",
                                 idx,
                                 text.text
                             );
-                            successful_operations += 1;
                         }
                         _ => {
-                            tracing::info!(
-                                "Client {}: ✅ Tool 'sub' call successful (non-text result)",
+                            tracing::error!(
+                                "[E2E_SUB_FAIL] Client {}: expected structured result, got other",
                                 idx
                             );
-                            successful_operations += 1;
                         }
                     }
                 }
             }
             Err(e) => {
-                tracing::error!("Client {}: ❌ Failed to call tool 'sub': {:?}", idx, e);
+                tracing::error!("[E2E_SUB_FAIL] Client {}: call failed: {:?}", idx, e);
             }
         }
     }
@@ -162,16 +192,26 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tracing::info!(
-        "✅ Cleanup completed: {}/{} clients cancelled successfully",
+        "Cleanup completed: {}/{} clients cancelled successfully",
         successful_cleanups,
         10
     );
-    tracing::info!("🎉 IN-PROCESS TRANSPORT EXAMPLE COMPLETED SUCCESSFULLY! 🎉");
-    tracing::info!(
-        "📊 Summary: {} clients created, {} tool operations, {} cleanups",
-        10,
-        successful_operations,
-        successful_cleanups
-    );
+
+    // Final E2E verification
+    let expected_operations = 20; // 10 clients * 2 tools (sum + sub)
+    if successful_operations == expected_operations && successful_cleanups == 10 {
+        tracing::info!(
+            "[E2E_TEST_PASS] All tests passed: {} tool operations, {} cleanups",
+            successful_operations,
+            successful_cleanups
+        );
+    } else {
+        tracing::error!(
+            "[E2E_TEST_FAIL] Expected {} operations and 10 cleanups, got {} operations and {} cleanups",
+            expected_operations,
+            successful_operations,
+            successful_cleanups
+        );
+    }
     Ok(())
 }

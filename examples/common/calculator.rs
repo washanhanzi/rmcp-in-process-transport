@@ -26,6 +26,11 @@ pub struct SubRequest {
     pub b: i32,
 }
 
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct SubResponse {
+    pub result: i32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Calculator {
     pub dummy_data: String,
@@ -50,10 +55,10 @@ impl Calculator {
     }
 
     #[tool(description = "Calculate the difference of two numbers")]
-    fn sub(&self, Parameters(SubRequest { a, b }): Parameters<SubRequest>) -> Json<i32> {
+    fn sub(&self, Parameters(SubRequest { a, b }): Parameters<SubRequest>) -> Json<SubResponse> {
         let result = a - b;
         info!(a, b, result, "sub tool invoked");
-        Json(result)
+        Json(SubResponse { result })
     }
 }
 
