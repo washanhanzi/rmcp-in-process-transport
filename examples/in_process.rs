@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rmcp::{ServiceExt, model::CallToolRequestParam};
+use rmcp::{ServiceExt, model::CallToolRequestParams};
 use rmcp_in_process_transport::in_process::TokioInProcess;
 
 mod common;
@@ -62,12 +62,14 @@ async fn main() -> anyhow::Result<()> {
         // Call the sum tool with arguments
         let expected_sum = idx + 10;
         match service
-            .call_tool(CallToolRequestParam {
-                name: "sum".into(),
-                arguments: serde_json::json!({ "a": idx, "b": 10 })
-                    .as_object()
-                    .cloned(),
-            })
+            .call_tool(
+                CallToolRequestParams::new("sum").with_arguments(
+                    serde_json::json!({ "a": idx, "b": 10 })
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+            )
             .await
         {
             Ok(result) => {
@@ -111,12 +113,14 @@ async fn main() -> anyhow::Result<()> {
         // Call the sub tool with arguments (structured result)
         let expected_sub = idx - 3;
         match service
-            .call_tool(CallToolRequestParam {
-                name: "sub".into(),
-                arguments: serde_json::json!({ "a": idx, "b": 3 })
-                    .as_object()
-                    .cloned(),
-            })
+            .call_tool(
+                CallToolRequestParams::new("sub").with_arguments(
+                    serde_json::json!({ "a": idx, "b": 3 })
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+            )
             .await
         {
             Ok(result) => {

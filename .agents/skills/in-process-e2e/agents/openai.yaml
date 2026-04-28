@@ -1,0 +1,4 @@
+interface:
+  display_name: "In-process E2E"
+  short_description: "Run the in-process transport E2E check"
+  default_prompt: "Use $in-process-e2e to run and verify the in-process transport example."

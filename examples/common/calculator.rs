@@ -66,13 +66,11 @@ impl Calculator {
 impl ServerHandler for Calculator {
     fn get_info(&self) -> ServerInfo {
         debug!(dummy_data = %self.dummy_data, "Server get_info called");
-        ServerInfo {
-            instructions: Some(format!(
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            format!(
                 "A simple calculator with dummy data: {}",
                 self.dummy_data
-            )),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+            ),
+        )
     }
 }
